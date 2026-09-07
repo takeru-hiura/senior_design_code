@@ -94,7 +94,7 @@ writes the plate back over serial.
 4. On the PC:
 
 ```bat
-python pc\alpr_ov7670.py --bind 0.0.0.0
+python host_pc\alpr_ov7670.py --bind 0.0.0.0
 ```
 
 
