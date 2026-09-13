@@ -1,6 +1,7 @@
 `timescale 1ns / 1ps
 // Top-level data flow:
-//   OV7670 RGB565 -> grayscale -> streaming Sobel -> frame BRAM -> UDP -> PC
+//   OV7670 RGB565 -> grayscale -> frame BRAM -> UDP -> PC FastALPR
+//                              \-> Sobel -> ROI locator -> UDP metadata
 //   PC FastALPR text -> USB-UART -> 16-character buffer -> SSD1306 OLED
 //
 // This module owns board-level clock/reset sequencing and open-drain pin wiring.
@@ -58,6 +59,8 @@ module ov7670_nexys4ddr_top (
     wire [18:0] edge_addr;
     wire [7:0]  edge_data;
     wire        edge_en;
+    wire        roi_valid;
+    wire [15:0] roi_x0, roi_y0, roi_x1, roi_y1, roi_score;
     (* ASYNC_REG = "TRUE" *) reg edge_enable_meta, edge_enable_p;
     reg edge_mode_frame;
     wire [18:0] fb_wr_addr = edge_mode_frame ? edge_addr : wr_addr;
@@ -251,6 +254,24 @@ module ov7670_nexys4ddr_top (
         .out_pixel   (edge_data)
     );
 
+    // Sobel remains active in both display modes.  It now performs useful
+    // preprocessing by proposing a plate-like ROI while the unmodified
+    // grayscale image remains available to the pretrained recognizer.
+    sobel_roi_locator u_roi (
+        .clk         (pclk),
+        .rstn        (CPU_RESETN & config_done_p),
+        .frame_start (frame_tog_p[1] ^ frame_tog_p[2]),
+        .edge_valid  (edge_en),
+        .edge_addr   (edge_addr),
+        .edge_pixel  (edge_data),
+        .roi_valid   (roi_valid),
+        .roi_x0      (roi_x0),
+        .roi_y0      (roi_y0),
+        .roi_x1      (roi_x1),
+        .roi_y1      (roi_y1),
+        .roi_score   (roi_score)
+    );
+
     frame_buffer #(
         .DW (4)
     ) u_fb (
@@ -311,6 +332,12 @@ module ov7670_nexys4ddr_top (
         .enable    (config_done & eth_rstn_r),
         .fb_data   (rd_pixel),
         .fb_addr   (eth_fb_addr),
+        .roi_valid (roi_valid),
+        .roi_x0    (roi_x0),
+        .roi_y0    (roi_y0),
+        .roi_x1    (roi_x1),
+        .roi_y1    (roi_y1),
+        .roi_score (roi_score),
         .eth_txen  (eth_txen),
         .eth_txd   (eth_txd)
     );

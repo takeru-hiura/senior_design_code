@@ -3,10 +3,12 @@
 // for the PC. The frame-buffer clock domain fills a 192-byte packet RAM; a
 // toggle synchronizer tells the Ethernet domain when that packet is ready.
 //
-// The 16-byte project-specific UDP payload header is, in network byte order:
-//   "N4VD", frame_id, packet_index, packet_count, width, height, format.
-// Format 2 means one unsigned 8-bit grayscale sample per following byte. This
-// N4VD format is local to this project, not an Internet or camera standard.
+// The format-3 project-specific UDP header is 26 bytes, in network byte order:
+//   "N4VD", frame_id, packet_index, packet_count, width, height, format,
+//   roi_x0, roi_y0, roi_x1, roi_y1, roi_score.
+// Coordinates are inclusive. A score of zero means that no ROI met the FPGA's
+// minimum edge-density threshold. Format 2 (the former 16-byte header) remains
+// supported by the PC receiver for use with older bitstreams.
 //
 // The addresses/checksums are constants because every datagram has the same
 // size and fixed endpoints. Change DEST_MAC if the PC adapter's MAC changes.
@@ -23,13 +25,19 @@ module eth_video_udp (
     input  wire        enable,
     input  wire [7:0]  fb_data,
     output reg  [18:0] fb_addr,
+    input  wire        roi_valid,
+    input  wire [15:0] roi_x0,
+    input  wire [15:0] roi_y0,
+    input  wire [15:0] roi_x1,
+    input  wire [15:0] roi_y1,
+    input  wire [15:0] roi_score,
     output wire        eth_txen,
     output wire [1:0]  eth_txd
 );
 
     // 307,200 pixels / 192 pixels per packet = 1,600 packets per frame.
     localparam integer PIX_PER_PKT = 192;
-    localparam integer PKT_BYTES   = 250;
+    localparam integer PKT_BYTES   = 260;
     localparam [15:0]  PKT_CNT     = 16'd1600;
     localparam [47:0]  DEST_MAC    = 48'h00E0_4C51_1930;
     localparam [47:0]  SRC_MAC     = 48'h0200_0000_0001;
@@ -50,16 +58,28 @@ module eth_video_udp (
     reg [15:0] frame_id;
     reg [15:0] pkt_idx;
     reg        fill_tog;
+    reg [80:0] roi_meta_fb, roi_sync_fb;
+    reg        roi_valid_frame;
+    reg [15:0] roi_x0_frame, roi_y0_frame, roi_x1_frame, roi_y1_frame;
+    reg [15:0] roi_score_frame;
 
     (* ASYNC_REG = "TRUE" *) reg [2:0] busy_sync;
     (* ASYNC_REG = "TRUE" *) reg [2:0] fill_sync;
     wire tx_busy;
 
     always @(posedge clk_fb) begin
-        if (!rstn_fb)
+        if (!rstn_fb) begin
             busy_sync <= 3'b000;
-        else
+            roi_meta_fb <= 81'd0;
+            roi_sync_fb <= 81'd0;
+        end else begin
             busy_sync <= {busy_sync[1:0], tx_busy};
+            // The ROI result is stable for a camera frame. Two vector stages
+            // provide ample settling time before it is latched for a complete
+            // transmitted frame below.
+            roi_meta_fb <= {roi_valid, roi_x0, roi_y0, roi_x1, roi_y1, roi_score};
+            roi_sync_fb <= roi_meta_fb;
+        end
     end
     wire tx_busy_v = busy_sync[2];
 
@@ -74,12 +94,24 @@ module eth_video_udp (
             pkt_idx   <= 16'd0;
             fill_tog  <= 1'b0;
             fb_addr   <= 19'd0;
+            roi_valid_frame <= 1'b0;
+            roi_x0_frame <= 0; roi_y0_frame <= 0;
+            roi_x1_frame <= 0; roi_y1_frame <= 0; roi_score_frame <= 0;
         end else begin
             case (vstate)
                 ST_IDLE: begin
                     fb_addr <= pix_base;
-                    if (enable && !tx_busy_v)
+                    if (enable && !tx_busy_v) begin
+                        if (pkt_idx == 0) begin
+                            roi_valid_frame <= roi_sync_fb[80];
+                            roi_x0_frame <= roi_sync_fb[79:64];
+                            roi_y0_frame <= roi_sync_fb[63:48];
+                            roi_x1_frame <= roi_sync_fb[47:32];
+                            roi_y1_frame <= roi_sync_fb[31:16];
+                            roi_score_frame <= roi_sync_fb[80] ? roi_sync_fb[15:0] : 16'd0;
+                        end
                         vstate <= ST_FILL;
+                    end
                 end
                 ST_FILL: begin
                     pix[pix_i] <= fb_data;
@@ -126,6 +158,8 @@ module eth_video_udp (
     reg         tx_start;
     reg [15:0]  frame_id_e;
     reg [15:0]  pkt_idx_e;
+    reg         roi_valid_e;
+    reg [15:0]  roi_x0_e, roi_y0_e, roi_x1_e, roi_y1_e, roi_score_e;
 
     // Ethernet, IPv4, UDP, and N4VD header bytes are generated directly from
     // the requested transmit address; only the video payload needs RAM.
@@ -152,7 +186,7 @@ module eth_video_udp (
                 8'd14: hdr_byte = 8'h45;
                 8'd15: hdr_byte = 8'h00;
                 8'd16: hdr_byte = 8'h00;
-                8'd17: hdr_byte = 8'hEC;
+                8'd17: hdr_byte = 8'hF6;
                 8'd18: hdr_byte = 8'h00;
                 8'd19: hdr_byte = 8'h00;
                 8'd20: hdr_byte = 8'h40;
@@ -160,7 +194,7 @@ module eth_video_udp (
                 8'd22: hdr_byte = 8'h40;
                 8'd23: hdr_byte = 8'h11;
                 8'd24: hdr_byte = 8'hB6;
-                8'd25: hdr_byte = 8'hA4;
+                8'd25: hdr_byte = 8'h9A;
                 8'd26: hdr_byte = SRC_IP[31:24];
                 8'd27: hdr_byte = SRC_IP[23:16];
                 8'd28: hdr_byte = SRC_IP[15:8];
@@ -174,7 +208,7 @@ module eth_video_udp (
                 8'd36: hdr_byte = 8'h13;
                 8'd37: hdr_byte = 8'h88;
                 8'd38: hdr_byte = 8'h00;
-                8'd39: hdr_byte = 8'hD8;
+                8'd39: hdr_byte = 8'hE2;
                 8'd40: hdr_byte = 8'h00;
                 8'd41: hdr_byte = 8'h00;
                 8'd42: hdr_byte = 8'h4E;
@@ -192,15 +226,25 @@ module eth_video_udp (
                 8'd54: hdr_byte = 8'h01;
                 8'd55: hdr_byte = 8'hE0;
                 8'd56: hdr_byte = 8'h00;
-                8'd57: hdr_byte = 8'h02; // format 2: one unsigned grayscale byte/pixel
+                8'd57: hdr_byte = 8'h03; // format 3: grayscale plus ROI metadata
+                8'd58: hdr_byte = roi_valid_e ? roi_x0_e[15:8] : 8'h00;
+                8'd59: hdr_byte = roi_valid_e ? roi_x0_e[7:0]  : 8'h00;
+                8'd60: hdr_byte = roi_valid_e ? roi_y0_e[15:8] : 8'h00;
+                8'd61: hdr_byte = roi_valid_e ? roi_y0_e[7:0]  : 8'h00;
+                8'd62: hdr_byte = roi_valid_e ? roi_x1_e[15:8] : 8'h00;
+                8'd63: hdr_byte = roi_valid_e ? roi_x1_e[7:0]  : 8'h00;
+                8'd64: hdr_byte = roi_valid_e ? roi_y1_e[15:8] : 8'h00;
+                8'd65: hdr_byte = roi_valid_e ? roi_y1_e[7:0]  : 8'h00;
+                8'd66: hdr_byte = roi_valid_e ? roi_score_e[15:8] : 8'h00;
+                8'd67: hdr_byte = roi_valid_e ? roi_score_e[7:0]  : 8'h00;
                 default: hdr_byte = 8'h00;
             endcase
         end
     endfunction
 
-    wire [7:0] pix_n = tx_addr - 11'd58;
+    wire [7:0] pix_n = tx_addr - 11'd68;
 
-    assign tx_data = (tx_addr < 11'd58) ? hdr_byte(tx_addr[7:0], frame_id_e, pkt_idx_e)
+    assign tx_data = (tx_addr < 11'd68) ? hdr_byte(tx_addr[7:0], frame_id_e, pkt_idx_e)
                                         : pix[pix_n];
 
     eth_rmii_tx u_tx (
@@ -220,12 +264,21 @@ module eth_video_udp (
             tx_start   <= 1'b0;
             frame_id_e <= 16'd0;
             pkt_idx_e  <= 16'd0;
+            roi_valid_e <= 1'b0;
+            roi_x0_e <= 0; roi_y0_e <= 0; roi_x1_e <= 0; roi_y1_e <= 0;
+            roi_score_e <= 0;
         end else begin
             tx_start <= 1'b0;
             if (fill_pulse && !tx_busy) begin
                 tx_start   <= 1'b1;
                 frame_id_e <= frame_id;
                 pkt_idx_e  <= pkt_idx;
+                roi_valid_e <= roi_valid_frame;
+                roi_x0_e <= roi_x0_frame;
+                roi_y0_e <= roi_y0_frame;
+                roi_x1_e <= roi_x1_frame;
+                roi_y1_e <= roi_y1_frame;
+                roi_score_e <= roi_score_frame;
             end
         end
     end
