@@ -1,113 +1,79 @@
-# FPGA OV7670 Real-time Edge Detection Project
+# OV7670 license plate capture on Nexys4 DDR
 
-Live 640x480 edge maps from an OV7670 on a Digilent Nexys4 DDR
-(Artix-7 XC7A100T), processed by a streaming Sobel accelerator in FPGA RTL and
-sent to a PC over the board's Ethernet port. 
+This project captures 640 × 480 RGB565 video from an OV7670 on a Nexys4 DDR
+(`xc7a100tcsg324-1`). The FPGA converts each pixel to grayscale and sends it
+to a PC over the board's 100 Mbps Ethernet port. One streaming Sobel filter
+scores plate-shaped regions and sends the best ROI coordinates with the video.
+The PC runs FastALPR on that grayscale crop, retries the full frame when the
+crop finds no plate, and writes recognized text to an SSD1306 OLED over the
+board's USB-UART connection.
 
-The camera keeps its proven RGB565 SCCB configuration. Each captured pixel is
-converted to 8-bit grayscale, passed through a two-line-buffer 3x3 Sobel
-accelerator, and thresholded in hardware. The selected grayscale or Sobel image
-is stored in block RAM and transmitted to the PC. Image capture, grayscale
-conversion, and Sobel processing all run at the camera pixel clock. The PC remains responsible for license plate decoding. 
+The Sobel image is used for ROI selection only. The UDP image is always
+grayscale; SW0 is unused.
 
+## Hardware connections
 
-## Verilog module map
+Set the Nexys4 DDR JP1 jumper to JTAG. Pmod power is **3.3 V**. Connect the
+OV7670 as follows; `cam_pclk` must use JB10/H16.
 
-| File | Function |
+| OV7670 | Nexys4 DDR Pmod |
 | --- | --- |
-| `verilog/ov7670_nexys4ddr_top.v` | Top-level clocking, reset, mode selection, and module integration |
-| `verilog/ov7670_capture.v` | RGB565 capture and hardware grayscale conversion |
-| `verilog/sobel_stream.v` | Streaming 3x3 Sobel edge detector with two line buffers |
-| `verilog/frame_buffer.v` | Dual-clock 640x480, 4-bit frame buffer |
-| `verilog/eth_video_udp.v` | Video packetization into Ethernet/IPv4/UDP frames |
-| `verilog/eth_rmii_tx.v` | 100 Mbps RMII transmitter |
-| `verilog/eth_crc32.v` | Ethernet frame CRC |
-| `verilog/eth_phy_link.v` | LAN8720A PHY initialization and link configuration |
-| `verilog/ov7670_config.v`, `verilog/ov7670_sccb.v` | Camera register configuration over SCCB |
-| `verilog/plate_uart.v`, `verilog/uart_rx.v` | Recognition-result receive path from the PC |
-| `verilog/ssd1306.v`, `verilog/i2c_write.v` | OLED controller and I2C writer |
-| `verilog/clocks.v` | FPGA clock generation |
+| D0–D7 | JA1–JA4, JA7–JA10, in order |
+| SIOC, SIOD | JB1, JB2 |
+| VSYNC, HREF | JB3, JB4 |
+| XCLK, RESET, PWDN, PCLK | JB7, JB8, JB9, JB10 |
+| 3.3 V, GND | JA6, JA5 |
 
-## BRAM optimization
+Connect the SSD1306 OLED at I2C address `0x3C`:
 
-Sobel operates on the original 8-bit grayscale stream, but the full frame is
-stored using the upper four bits of each selected pixel. On readback, the FPGA
-replicates the nibble (`abcd` becomes `abcdabcd`) to restore the full 0-255
-range before UDP transmission. Binary Sobel values remain exactly black or
-white. This reduces frame-buffer BRAM substantially while keeping the 640x480
-resolution.
+| SSD1306 | Nexys4 DDR Pmod JD |
+| --- | --- |
+| SCL, SDA | JD1, JD2 |
+| GND, 3.3 V | JD5/JD11, JD6/JD12 |
 
-## Hardware
+Connect board Ethernet to the PC network adapter and the board USB cable to
+the PC for programming and serial text output.
 
-- Nexys4 DDR, JP1 = JTAG
-- OV7670 Camera Module
-- Short female-to-female jumpers
-- SSD1406 Camera Module
+## Build and run
 
-### Wiring (match signal names)
+1. In Vivado, create a project for `xc7a100tcsg324-1`. Add every `.v` file in
+   `verilog/` as a design source and `verilog/nexys4ddr.xdc` as a constraint
+   file. Set `ov7670_nexys4ddr_top` as the top module, then generate and
+   program the bitstream.
+2. Set the PC's Ethernet adapter to static IPv4 address `192.168.1.2` on a
+   `/24` subnet. In `verilog/eth_video_udp.v`, set `DEST_MAC` to that adapter's
+   actual MAC address before building. The FPGA uses source IP
+   `192.168.1.10` and sends UDP to port `5000`.
+3. On the PC, use Python 3.10 or newer and install the receiver dependencies:
 
-Pmod pins 5/11 = GND, 6/12 = 3.3 V.
+   ```sh
+   python -m pip install numpy opencv-python fast-alpr pyserial
+   ```
 
-| OV7670 | Pmod | FPGA |
-| --- | --- | --- |
-| D0–D3 | JA1–JA4 | C17, D18, E18, G17 |
-| D4–D7 | JA7–JA10 | D17, E17, F18, G18 |
-| SIOC (SCL) | JB1 | D14 |
-| SIOD (SDA) | JB2 | F16 |
-| VSYNC | JB3 | G16 |
-| HREF | JB4 | H14 |
-| XCLK | JB7 | E16 |
-| RESET | JB8 | F13  |
-| PWDN | JB9 | G13|
-| PCLK| JB10 |  |
-| 3.3 V | JA6  | |
-| GND | JA5  | |
+4. Start the receiver from this directory:
 
-## Build
+   ```sh
+   python host_pc/alpr_ov7670.py --bind 0.0.0.0
+   ```
 
-Part: `xc7a100tcsg324-1`.
+The receiver tries to find the Digilent USB-UART port. If needed, pass
+`--serial COM7` on Windows or the corresponding serial device path on macOS
+or Linux. The OLED shows `PLATE WAITING` until a plate is recognized. Press
+Esc to close the receiver.
 
+## Data path and limits
 
-Open `vivado`, generate the bitstream, and program the board.
+- `ov7670_capture.v` assembles RGB565 bytes and computes approximately
+  `(R + 2G + B) / 4`.
+- `sobel_stream.v` applies one 3 × 3 Sobel filter to the 8-bit grayscale
+  stream and thresholds its edge magnitude at 80.
+- `sobel_roi_locator.v` chooses the highest scoring 128 × 64 region from
+  32 × 32 edge tiles. The PC pads the ROI before recognition.
+- `frame_buffer.v` stores the high four grayscale bits per pixel in block RAM;
+  the packetizer expands each nibble to one byte. Each UDP packet carries 192
+  pixels and format-3 ROI metadata.
 
-## SSD1306 OLED (Pmod JD)
-
-I2C address **0x3C**. **3.3 V only**. 
-| SSD1306 | Pmod JD | FPGA |
-| --- | --- | --- |
-| SCL | JD1 | H4 |
-| SDA | JD2 | H1 |
-| GND | JD5 or JD11 | |
-| 3.3 V | JD6 or JD12 | |
-
-After programming, the panel shows `PLATE WAITING` until the PC sends a
-newline-terminated ASCII string at **115200 8N1** on the board USB-UART (same
-USB cable used to program). The PC runs
-[FastALPR](https://github.com/ankandrew/fast-alpr) on the Ethernet video and
-writes the plate back over serial.
-
-## License plate recognition
-
-1. Ethernet as in the section below (`192.168.1.2`, UDP 5000).
-2. Board USB connected so computer shows a USB Serial / FTDI COM port.
-3. Rebuild and program FPGA.
-4. On the PC:
-
-```bat
-python host_pc\alpr_ov7670.py --bind 0.0.0.0
-```
-
-
-
-## Image format
-
-The FPGA expands the RGB565 components and computes grayscale as
-`(R + 2G + B) / 4`. It then computes saturated `|Gx| + |Gy|` with a streaming
-3x3 Sobel kernel and emits a binary edge map using threshold 80. The frame
-buffer stores four bits per pixel; the UDP payload remains one byte per pixel.
-
-## Ethernet stream
-
-**100 Mbps** RMII to the on-board LAN8720A. The transmitted payload is one byte
-per pixel, and each packet carries 192 pixels. 
-
+The frame buffer is a single buffer shared by camera writes and Ethernet
+reads, so a transmitted image can contain pixels from two camera frames.
+Packet loss can also leave gaps in the PC image. The receiver shows partial
+frames instead of waiting indefinitely for every packet.

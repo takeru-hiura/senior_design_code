@@ -3,7 +3,7 @@
 
 Complete frames are displayed with OpenCV and periodically submitted for plate
 detection. New plate text is returned to the Nexys4 DDR OLED over USB-UART.
-Camera capture, grayscale conversion, optional Sobel filtering, and the N4VD
+Camera capture, grayscale conversion, Sobel ROI detection, and the N4VD
 UDP transport are implemented in FPGA RTL.
 """
 
@@ -147,7 +147,7 @@ class AlprWorker(object):
     queue when inference takes longer than the camera frame interval.
     """
 
-    def __init__(self, use_roi=True, roi_padding=0.15,
+    def __init__(self, roi_padding=0.15,
                  detector_model="yolo-v9-t-384-license-plate-end2end",
                  ocr_model="cct-s-v2-global-model"):
         self.lock = threading.Lock()
@@ -156,7 +156,6 @@ class AlprWorker(object):
         self.plate = None
         self.score = 0.0
         self.roi_used = False
-        self.use_roi = use_roi
         self.roi_padding = roi_padding
         self.detector_model = detector_model
         self.ocr_model = ocr_model
@@ -199,7 +198,7 @@ class AlprWorker(object):
             try:
                 roi_box = padded_roi(
                     roi, frame.shape[1], frame.shape[0], self.roi_padding
-                ) if self.use_roi else None
+                )
                 inference_frame = frame
                 used_roi = False
                 if roi_box is not None:
@@ -236,8 +235,6 @@ def main():
     parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--interval", type=float, default=1.0,
                         help="Seconds between ALPR attempts")
-    parser.add_argument("--no-roi", action="store_true",
-                        help="Ignore format-3 FPGA ROI metadata")
     parser.add_argument("--roi-padding", type=float, default=0.15,
                         help="Fractional padding around the FPGA ROI (default: 0.15)")
     parser.add_argument("--ocr-model", default="cct-s-v2-global-model",
@@ -255,7 +252,6 @@ def main():
         parser.error("--roi-padding must be non-negative")
 
     worker = AlprWorker(
-        use_roi=not args.no_roi,
         roi_padding=args.roi_padding,
         detector_model=args.detector_model,
         ocr_model=args.ocr_model,
@@ -385,10 +381,8 @@ def main():
                 send_plate(ser, plate)
                 last_sent = plate
 
-            # Keep an unannotated image for manual inference with the spacebar.
-            clean_display = display.copy()
             shown_roi = padded_roi(display_roi, width, height, args.roi_padding)
-            if shown_roi is not None and not args.no_roi:
+            if shown_roi is not None:
                 x0, y0, x1, y1, roi_edge_score = shown_roi
                 cv2.rectangle(display, (x0, y0), (x1, y1), (0, 255, 255), 2)
                 cv2.putText(
@@ -406,9 +400,6 @@ def main():
             key = cv2.waitKey(1) & 0xFF
             if key == 27:
                 break
-            if key == ord(" "):
-                worker.submit(clean_display, display_roi)
-                last_alpr = time.time()
     finally:
         worker.stop()
         sock.close()

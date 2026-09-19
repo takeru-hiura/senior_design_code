@@ -17,7 +17,6 @@
 module ov7670_nexys4ddr_top (
     input  wire        CLK100MHZ,
     input  wire        CPU_RESETN,
-    input  wire        edge_enable,
     input  wire [7:0]  cam_d,
     input  wire        cam_pclk,
     input  wire        cam_href,
@@ -56,17 +55,12 @@ module ov7670_nexys4ddr_top (
     wire [18:0] wr_addr;
     wire [7:0]  wr_data;
     wire        wr_en;
-    wire [18:0] edge_addr;
     wire [7:0]  edge_data;
     wire        edge_en;
     wire        roi_valid;
     wire [15:0] roi_x0, roi_y0, roi_x1, roi_y1, roi_score;
-    (* ASYNC_REG = "TRUE" *) reg edge_enable_meta, edge_enable_p;
-    reg edge_mode_frame;
-    wire [18:0] fb_wr_addr = edge_mode_frame ? edge_addr : wr_addr;
-    wire [7:0]  fb_wr_data = edge_mode_frame ? edge_data : wr_data;
-    wire        fb_wr_en   = edge_mode_frame ? edge_en   : wr_en;
-    wire [3:0]  fb_wr_pixel = fb_wr_data[7:4];
+    // Keep the grayscale image for ALPR; Sobel supplies ROI metadata.
+    wire [3:0]  fb_wr_pixel = wr_data[7:4];
     wire [3:0]  rd_pixel_4;
     // Replicate the stored nibble so the UDP interface remains 8-bit and its
     // brightness range remains 0..255 (0x0 -> 0x00, 0xF -> 0xFF).
@@ -116,26 +110,14 @@ module ov7670_nexys4ddr_top (
         .O (pclk)
     );
 
-    // Register camera pins at the I/O boundary and synchronize the board
-    // switch into the camera pixel-clock domain.
+    // Register camera pins at the I/O boundary.
     always @(posedge pclk) begin
         if (!CPU_RESETN) begin
             cam_d_q    <= 8'd0;
             cam_href_q <= 1'b0;
-            edge_enable_meta <= 1'b0;
-            edge_enable_p    <= 1'b0;
-            edge_mode_frame  <= 1'b0;
         end else begin
             cam_d_q    <= cam_d;
             cam_href_q <= cam_href;
-            edge_enable_meta <= edge_enable;
-            edge_enable_p    <= edge_enable_meta;
-
-            // Apply a switch change only at a frame boundary. This prevents
-            // one transmitted frame from containing a mixture of grayscale
-            // and Sobel pixels when SW0 is moved during active video.
-            if (frame_tog_p[1] ^ frame_tog_p[2])
-                edge_mode_frame <= edge_enable_p;
         end
     end
 
@@ -234,10 +216,7 @@ module ov7670_nexys4ddr_top (
 
     // FPGA vision accelerator: two line buffers form a 3x3 window and a
     // fully streaming Sobel datapath emits one thresholded edge pixel per
-    // valid camera pixel. THRESHOLD is a synthesis-time starting point; a
-    // SW0 selects its edge output (1) or grayscale bypass (0), enabling direct
-    // hardware/software A/B captures without rebuilding the bitstream. The
-    // synchronized selection is latched at VSYNC so each frame has one mode.
+    // valid camera pixel. The edge stream is used only by the ROI locator.
     sobel_stream #(
         .IMAGE_WIDTH (640),
         .THRESHOLD   (8'd80),
@@ -250,19 +229,17 @@ module ov7670_nexys4ddr_top (
         .in_addr     (wr_addr),
         .in_pixel    (wr_data),
         .out_valid   (edge_en),
-        .out_addr    (edge_addr),
+        .out_addr    (),
         .out_pixel   (edge_data)
     );
 
-    // Sobel remains active in both display modes.  It now performs useful
-    // preprocessing by proposing a plate-like ROI while the unmodified
-    // grayscale image remains available to the pretrained recognizer.
+    // Propose a plate-like ROI from the Sobel stream while preserving the
+    // grayscale image for the pretrained recognizer.
     sobel_roi_locator u_roi (
         .clk         (pclk),
         .rstn        (CPU_RESETN & config_done_p),
         .frame_start (frame_tog_p[1] ^ frame_tog_p[2]),
         .edge_valid  (edge_en),
-        .edge_addr   (edge_addr),
         .edge_pixel  (edge_data),
         .roi_valid   (roi_valid),
         .roi_x0      (roi_x0),
@@ -276,8 +253,8 @@ module ov7670_nexys4ddr_top (
         .DW (4)
     ) u_fb (
         .wr_clk  (pclk),
-        .wr_en   (fb_wr_en),
-        .wr_addr (fb_wr_addr),
+        .wr_en   (wr_en),
+        .wr_addr (wr_addr),
         .wr_data (fb_wr_pixel),
         .rd_clk  (clk_25),
         .rd_addr (eth_fb_addr),

@@ -44,15 +44,16 @@ module eth_video_udp (
     localparam [31:0]  SRC_IP      = 32'hC0A8_010A; // 192.168.1.10
     localparam [31:0]  DEST_IP     = 32'hC0A8_0102; // 192.168.1.2
 
-    localparam ST_IDLE = 2'd0;
-    localparam ST_FILL = 2'd1;
-    localparam ST_KICK = 2'd2;
-    localparam ST_WAIT = 2'd3;
+    localparam ST_IDLE  = 3'd0;
+    localparam ST_PRIME = 3'd1;
+    localparam ST_FILL  = 3'd2;
+    localparam ST_KICK  = 3'd3;
+    localparam ST_WAIT  = 3'd4;
 
     // One packet is staged here before crossing from clk_fb to clk_eth. The
     // toggle handshake keeps the multi-bit payload stable while it is read.
     reg [7:0]  pix [0:191];
-    reg [1:0]  vstate;
+    reg [2:0]  vstate;
     reg [7:0]  pix_i;
     reg [18:0] pix_base;
     reg [15:0] frame_id;
@@ -110,8 +111,14 @@ module eth_video_udp (
                             roi_y1_frame <= roi_sync_fb[31:16];
                             roi_score_frame <= roi_sync_fb[80] ? roi_sync_fb[15:0] : 16'd0;
                         end
-                        vstate <= ST_FILL;
+                        vstate <= ST_PRIME;
                     end
+                end
+                ST_PRIME: begin
+                    // The BRAM read is registered. Its first pixel appears
+                    // after this edge; request the following pixel now.
+                    fb_addr <= pix_base + 19'd1;
+                    vstate <= ST_FILL;
                 end
                 ST_FILL: begin
                     pix[pix_i] <= fb_data;
@@ -120,7 +127,7 @@ module eth_video_udp (
                         vstate <= ST_KICK;
                     end else begin
                         pix_i   <= pix_i + 1'b1;
-                        fb_addr <= pix_base + {11'd0, pix_i} + 19'd1;
+                        fb_addr <= pix_base + {11'd0, pix_i} + 19'd2;
                     end
                 end
                 ST_KICK: begin

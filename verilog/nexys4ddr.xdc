@@ -16,9 +16,6 @@ create_clock -period 10.000 -name sys_clk_pin -waveform {0.000 5.000} [get_ports
 
 set_property -dict {PACKAGE_PIN C12 IOSTANDARD LVCMOS33} [get_ports CPU_RESETN]
 
-## SW0: 0 streams FPGA grayscale, 1 streams FPGA Sobel edge output.
-set_property -dict {PACKAGE_PIN J15 IOSTANDARD LVCMOS33} [get_ports edge_enable]
-
 ## Camera on Pmod JA (data) + JB (clocks / SCCB). PCLK must be JB10 / H16.
 set_property -dict {PACKAGE_PIN C17 IOSTANDARD LVCMOS33} [get_ports {cam_d[0]}]
 set_property -dict {PACKAGE_PIN D18 IOSTANDARD LVCMOS33} [get_ports {cam_d[1]}]
@@ -66,7 +63,6 @@ set_property -dict {PACKAGE_PIN A8  IOSTANDARD LVCMOS33 SLEW FAST DRIVE 12} [get
 ## Reset and UART are asynchronous external controls/data. Their first internal
 ## stages are synchronizers or reset logic, so ordinary setup timing is waived.
 set_false_path -from [get_ports CPU_RESETN]
-set_false_path -from [get_ports edge_enable]
 set_false_path -to   [get_ports eth_rstn]
 
 set_property CFGBVS VCCO [current_design]

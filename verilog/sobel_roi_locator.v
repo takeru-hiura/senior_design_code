@@ -9,8 +9,8 @@
 // following frame.  The PC adds padding and runs FastALPR on the corresponding
 // grayscale crop, falling back to the complete grayscale frame if necessary.
 //
-// edge_addr is accepted for interface clarity; raster position is counted
-// from edge_valid because sobel_stream emits exactly one result per input.
+// Raster position is counted from edge_valid because sobel_stream emits
+// exactly one result per input.
 
 module sobel_roi_locator #(
     parameter integer IMAGE_WIDTH = 640,
@@ -23,7 +23,6 @@ module sobel_roi_locator #(
     input  wire        rstn,
     input  wire        frame_start,
     input  wire        edge_valid,
-    input  wire [18:0] edge_addr,
     input  wire [7:0]  edge_pixel,
     output reg         roi_valid,
     output reg  [15:0] roi_x0,
@@ -65,10 +64,6 @@ module sobel_roi_locator #(
         {3'b000, row_t1} + {3'b000, finished_tile} +
         {3'b000, prev_t3} + {3'b000, prev_t2} +
         {3'b000, prev_t1} + {3'b000, previous_tile};
-
-    // Keep the otherwise informational address from being optimized into an
-    // interface warning in strict lint configurations.
-    wire unused_edge_addr = ^edge_addr;
 
     integer i;
     initial begin
