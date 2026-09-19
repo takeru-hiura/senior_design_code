@@ -64,9 +64,9 @@ Pmod pins 5/11 = GND, 6/12 = 3.3 V.
 | XCLK | JB7 | E16 |
 | RESET | JB8 | F13  |
 | PWDN | JB9 | G13|
-| PCLK| JB10 |  |
-| 3.3 V | JA6  | |
-| GND | JA5  | |
+| PCLK| JB10 | H16 |
+| 3.3 V | JA6  | Pmod JA Pin 6 |
+| GND | JA5  | Pmod JA Pin 5 |
 
 ## Build
 
